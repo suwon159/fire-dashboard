@@ -37,8 +37,8 @@ def get_risk_grade(r):
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
 
 # 구로디지털단지 / 현대건설기술교육원 적용용
-NX = 59
-NY = 125
+NX = 100
+NY = 80
 
 
 def get_base_datetime():
