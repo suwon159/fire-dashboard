@@ -4,7 +4,7 @@ import plotly.express as px
 import pandas as pd
 import math
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 st.set_page_config(page_title="건설현장 화재위험도 대시보드", layout="wide")
 
@@ -37,19 +37,23 @@ def get_risk_grade(r):
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
 
 # 구로디지털단지 / 현대건설기술교육원 적용용
-NX = 100
-NY = 80
+NX = 59
+NY = 127
+
+# 한국시간
+KST = timezone(timedelta(hours=9))
 
 
 def get_base_datetime():
     """
     초단기실황은 매시각 10분 이후 현재 시각 자료 호출 가능
+    한국시간(KST) 기준으로 계산
     예:
     14:03 -> 13:00 사용
     14:10 -> 14:00 사용
     14:35 -> 14:00 사용
     """
-    now = datetime.now()
+    now = datetime.now(KST)
 
     if now.minute < 10:
         base = now - timedelta(hours=1)
@@ -80,7 +84,6 @@ def fetch_kma_weather(nx, ny, base_date, base_time, auth_key):
 
     data = response.json()
 
-    # 디버깅용: 응답 형식 자체가 다른 경우
     if "response" not in data:
         raise RuntimeError(f"응답 형식 오류: {data}")
 
@@ -88,7 +91,6 @@ def fetch_kma_weather(nx, ny, base_date, base_time, auth_key):
     result_code = str(header.get("resultCode", ""))
     result_msg = header.get("resultMsg", "")
 
-    # 가이드상 정상 코드는 0 또는 00 형태로 올 수 있음
     if result_code not in ("0", "00"):
         raise RuntimeError(f"기상청 API 오류: {result_code} / {result_msg}")
 
@@ -158,8 +160,9 @@ st.markdown(
     "비산거리(D)는 작업높이(H)와 풍속(V)으로 자동 계산됩니다."
 )
 
-# 지금 실행 중인 파일이 맞는지 확인용
 st.caption(f"현재 AUTH_KEY = {AUTH_KEY}")
+st.caption(f"현재 위치 격자 = NX {NX}, NY {NY}")
+st.caption("현재 기준 시간대 = KST (UTC+9)")
 
 
 # -----------------------------
