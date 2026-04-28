@@ -128,11 +128,10 @@ def parse_kma_weather(items):
 def get_aws_tm():
     """
     AWS 매분자료 조회용 시각
-    너무 현재 시각을 바로 찍으면 아직 자료가 반영 안 되었을 수 있어
-    2분 전 시각을 사용
+    실제 반영 지연을 고려해 10분 전 시각 사용
     형식: YYYYMMDDHHMM (KST)
     """
-    now = get_now_kst() - timedelta(minutes=2)
+    now = get_now_kst() - timedelta(minutes=10)
     return now.strftime("%Y%m%d%H%M")
 
 
@@ -163,35 +162,33 @@ def fetch_aws_weather_state(stn, tm, auth_key):
 
 def parse_aws_weather_state(raw_text):
     """
-    텍스트 응답 예시를 기준으로 마지막 유효 데이터 라인을 파싱
-    disp=1 이므로 콤마 구분 형태를 기대
+    텍스트 응답에서 첫 번째 유효 데이터 라인을 파싱
     주요 컬럼:
     YYYYMMDDHHMI, STN, LON, LAT, S, N, WW1, NN1, ...
     """
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    lines = raw_text.splitlines()
 
-    data_lines = []
     for line in lines:
+        line = line.strip()
+
+        if not line:
+            continue
+
         if line.startswith("#"):
             continue
+
         if not line[0].isdigit():
             continue
-        data_lines.append(line)
 
-    if not data_lines:
-        raise RuntimeError("AWS 현천자료에서 데이터 라인을 찾지 못했습니다.")
+        parts = [p.strip() for p in line.split(",")]
 
-    latest = data_lines[-1]
-    parts = [p.strip() for p in latest.split(",") if p.strip() != ""]
+        if len(parts) >= 7:
+            obs_time = parts[0]
+            stn = parts[1]
+            ww1 = parts[6]
+            return obs_time, stn, ww1, line
 
-    if len(parts) < 7:
-        raise RuntimeError(f"AWS 현천자료 파싱 실패: {latest}")
-
-    obs_time = parts[0]
-    stn = parts[1]
-    ww1 = parts[6]
-
-    return obs_time, stn, ww1, latest
+    raise RuntimeError("AWS 현천자료에서 데이터 라인을 찾지 못했습니다.")
 
 
 def ww1_to_text(code):
