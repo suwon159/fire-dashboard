@@ -31,41 +31,56 @@ def get_risk_grade(r):
         return "매우위험", "작업 중지 검토 및 관리자 승인 필요", "#8e0000"
 
 
-# -----------------------------
-# 기상청 API Hub 설정
-# -----------------------------
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
 
-# 구로디지털단지 / 현대건설기술교육원 적용용
+# 현재 사용 중인 위치 격자
 NX = 59
 NY = 127
 
-# 한국시간
 KST = timezone(timedelta(hours=9))
 
 
-def get_base_datetime():
+def get_now_kst():
+    return datetime.now(KST)
+
+
+def get_ncst_base_datetime():
     """
-    초단기실황은 매시각 10분 이후 현재 시각 자료 호출 가능
-    한국시간(KST) 기준으로 계산
-    예:
-    14:03 -> 13:00 사용
-    14:10 -> 14:00 사용
-    14:35 -> 14:00 사용
+    초단기실황:
+    - base_time = 정시(HH00)
+    - 매시각 10분 이후 호출 가능
     """
-    now = datetime.now(KST)
+    now = get_now_kst()
 
     if now.minute < 10:
         base = now - timedelta(hours=1)
     else:
         base = now
 
-    base_date = base.strftime("%Y%m%d")
-    base_time = base.strftime("%H00")
-    return base_date, base_time
+    return base.strftime("%Y%m%d"), base.strftime("%H00")
 
 
-def fetch_kma_weather(nx, ny, base_date, base_time, auth_key):
+def get_fcst_base_datetime():
+    """
+    초단기예보:
+    - base_time = 30분(HH30)
+    - 매시각 45분 이후 호출 가능
+    예:
+    22:20 -> 21:30 사용
+    22:45 -> 22:30 사용
+    23:10 -> 22:30 사용
+    """
+    now = get_now_kst()
+
+    if now.minute < 45:
+        base = now - timedelta(hours=1)
+    else:
+        base = now
+
+    return base.strftime("%Y%m%d"), base.strftime("%H30")
+
+
+def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
     url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
 
     params = {
@@ -81,24 +96,56 @@ def fetch_kma_weather(nx, ny, base_date, base_time, auth_key):
 
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
-
     data = response.json()
 
     if "response" not in data:
-        raise RuntimeError(f"응답 형식 오류: {data}")
+        raise RuntimeError(f"실황 응답 형식 오류: {data}")
 
     header = data["response"].get("header", {})
     result_code = str(header.get("resultCode", ""))
     result_msg = header.get("resultMsg", "")
 
     if result_code not in ("0", "00"):
-        raise RuntimeError(f"기상청 API 오류: {result_code} / {result_msg}")
+        raise RuntimeError(f"실황 API 오류: {result_code} / {result_msg}")
 
-    body = data["response"].get("body", {})
-    items = body.get("items", {}).get("item", [])
-
+    items = data["response"].get("body", {}).get("items", {}).get("item", [])
     if not items:
-        raise RuntimeError("응답에 실황 데이터가 없습니다.")
+        raise RuntimeError("실황 데이터가 없습니다.")
+
+    return items
+
+
+def fetch_ultra_srt_fcst(nx, ny, base_date, base_time, auth_key):
+    url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtFcst"
+
+    params = {
+        "authKey": auth_key,
+        "numOfRows": "1000",
+        "pageNo": "1",
+        "dataType": "JSON",
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": str(nx),
+        "ny": str(ny),
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+
+    if "response" not in data:
+        raise RuntimeError(f"예보 응답 형식 오류: {data}")
+
+    header = data["response"].get("header", {})
+    result_code = str(header.get("resultCode", ""))
+    result_msg = header.get("resultMsg", "")
+
+    if result_code not in ("0", "00"):
+        raise RuntimeError(f"예보 API 오류: {result_code} / {result_msg}")
+
+    items = data["response"].get("body", {}).get("items", {}).get("item", [])
+    if not items:
+        raise RuntimeError("예보 데이터가 없습니다.")
 
     return items
 
@@ -128,6 +175,83 @@ def parse_kma_weather(items):
             wind_speed = value
 
     return temperature, humidity, wind_speed
+
+
+def parse_fcst_weather(items):
+    """
+    가장 가까운 예보시각의 SKY / PTY를 선택
+    """
+    grouped = {}
+
+    for item in items:
+        fcst_date = item.get("fcstDate")
+        fcst_time = item.get("fcstTime")
+        category = item.get("category")
+        fcst_value = item.get("fcstValue")
+
+        if not fcst_date or not fcst_time or not category:
+            continue
+
+        key = f"{fcst_date}{fcst_time}"
+        if key not in grouped:
+            grouped[key] = {}
+
+        grouped[key][category] = fcst_value
+
+    if not grouped:
+        return None, None, None
+
+    now_kst = get_now_kst()
+    now_key = now_kst.strftime("%Y%m%d%H%M")
+
+    candidate_keys = sorted(grouped.keys())
+
+    selected_key = None
+    for key in candidate_keys:
+        if key >= now_key[:10] + "00":
+            selected_key = key
+            break
+
+    if selected_key is None:
+        selected_key = candidate_keys[0]
+
+    data = grouped[selected_key]
+    sky = data.get("SKY")
+    pty = data.get("PTY")
+
+    return selected_key, sky, pty
+
+
+def sky_to_text(sky):
+    sky_map = {
+        "1": "맑음",
+        "3": "구름많음",
+        "4": "흐림",
+    }
+    return sky_map.get(str(sky), "알 수 없음")
+
+
+def pty_to_text(pty):
+    pty_map = {
+        "0": "없음",
+        "1": "비",
+        "2": "비/눈",
+        "3": "눈",
+        "4": "소나기",
+        "5": "빗방울",
+        "6": "빗방울눈날림",
+        "7": "눈날림",
+    }
+    return pty_map.get(str(pty), "알 수 없음")
+
+
+def make_today_weather_text(sky, pty):
+    pty_text = pty_to_text(pty)
+
+    if str(pty) != "0":
+        return pty_text
+
+    return sky_to_text(sky)
 
 
 equipment_scores = {
@@ -160,14 +284,7 @@ st.markdown(
     "비산거리(D)는 작업높이(H)와 풍속(V)으로 자동 계산됩니다."
 )
 
-st.caption(f"현재 AUTH_KEY = {AUTH_KEY}")
-st.caption(f"현재 위치 격자 = NX {NX}, NY {NY}")
-st.caption("현재 기준 시간대 = KST (UTC+9)")
 
-
-# -----------------------------
-# session_state 초기화
-# -----------------------------
 if "temperature" not in st.session_state:
     st.session_state.temperature = 30.0
 
@@ -177,19 +294,25 @@ if "humidity" not in st.session_state:
 if "wind_speed" not in st.session_state:
     st.session_state.wind_speed = 3.0
 
+if "today_weather" not in st.session_state:
+    st.session_state.today_weather = "정보 없음"
+
 if "weather_debug" not in st.session_state:
     st.session_state.weather_debug = ""
 
-if "last_base_date" not in st.session_state:
-    st.session_state.last_base_date = ""
+if "fcst_debug" not in st.session_state:
+    st.session_state.fcst_debug = ""
 
-if "last_base_time" not in st.session_state:
-    st.session_state.last_base_time = ""
+if "last_ncst_base" not in st.session_state:
+    st.session_state.last_ncst_base = ""
+
+if "last_fcst_base" not in st.session_state:
+    st.session_state.last_fcst_base = ""
+
+if "last_fcst_target" not in st.session_state:
+    st.session_state.last_fcst_target = ""
 
 
-# -----------------------------
-# 입력 영역
-# -----------------------------
 st.sidebar.header("입력 데이터")
 
 equipment = st.sidebar.selectbox("장비 선택", list(equipment_scores.keys()))
@@ -212,28 +335,38 @@ else:
     )
 
 
-# -----------------------------
-# 기상청 실시간 값 가져오기
-# -----------------------------
 use_kma_weather = st.sidebar.checkbox("기상청 실시간 값 사용", value=False)
 
 if use_kma_weather:
     if st.sidebar.button("기상청 값 불러오기"):
         try:
-            base_date, base_time = get_base_datetime()
-            st.session_state.last_base_date = base_date
-            st.session_state.last_base_time = base_time
+            ncst_base_date, ncst_base_time = get_ncst_base_datetime()
+            fcst_base_date, fcst_base_time = get_fcst_base_datetime()
 
-            items = fetch_kma_weather(
+            st.session_state.last_ncst_base = f"{ncst_base_date} {ncst_base_time}"
+            st.session_state.last_fcst_base = f"{fcst_base_date} {fcst_base_time}"
+
+            ncst_items = fetch_ultra_srt_ncst(
                 nx=NX,
                 ny=NY,
-                base_date=base_date,
-                base_time=base_time,
+                base_date=ncst_base_date,
+                base_time=ncst_base_time,
                 auth_key=AUTH_KEY
             )
 
-            temp, hum, wind = parse_kma_weather(items)
-            st.session_state.weather_debug = str(items)
+            fcst_items = fetch_ultra_srt_fcst(
+                nx=NX,
+                ny=NY,
+                base_date=fcst_base_date,
+                base_time=fcst_base_time,
+                auth_key=AUTH_KEY
+            )
+
+            temp, hum, wind = parse_kma_weather(ncst_items)
+            fcst_target, sky, pty = parse_fcst_weather(fcst_items)
+
+            st.session_state.weather_debug = str(ncst_items)
+            st.session_state.fcst_debug = str(fcst_items)
 
             if temp is not None:
                 st.session_state.temperature = temp
@@ -242,15 +375,25 @@ if use_kma_weather:
             if wind is not None:
                 st.session_state.wind_speed = wind
 
-            st.sidebar.success(f"기상청 값 불러오기 성공 ({base_date} {base_time})")
+            st.session_state.today_weather = make_today_weather_text(sky, pty)
+            st.session_state.last_fcst_target = fcst_target if fcst_target else ""
+
+            st.sidebar.success("기상청 값 불러오기 성공")
 
         except Exception as e:
             st.sidebar.error(f"기상청 값 조회 실패: {e}")
 
-if st.session_state.last_base_date and st.session_state.last_base_time:
-    st.sidebar.caption(
-        f"최근 조회 기준시각: {st.session_state.last_base_date} {st.session_state.last_base_time}"
-    )
+if st.session_state.last_ncst_base:
+    st.sidebar.caption(f"실황 기준시각: {st.session_state.last_ncst_base}")
+
+if st.session_state.last_fcst_base:
+    st.sidebar.caption(f"예보 발표시각: {st.session_state.last_fcst_base}")
+
+if st.session_state.last_fcst_target:
+    st.sidebar.caption(f"날씨 상태 적용시각: {st.session_state.last_fcst_target}")
+
+
+st.subheader(f"오늘의 날씨: {st.session_state.today_weather}")
 
 temperature = st.sidebar.number_input(
     "기온(℃)",
@@ -261,7 +404,7 @@ temperature = st.sidebar.number_input(
 )
 
 humidity = st.sidebar.number_input(
-    "습도(%)",
+    "상대습도(%)",
     min_value=0.0,
     max_value=100.0,
     value=float(st.session_state.humidity),
@@ -287,9 +430,6 @@ wind_speed = st.sidebar.number_input(
 distance = calculate_scattering_distance(work_height, wind_speed)
 
 
-# -----------------------------
-# 보폭 계산
-# -----------------------------
 STRIDE_LENGTH_M = 0.6
 distance_steps = math.ceil(distance / STRIDE_LENGTH_M)
 
@@ -312,9 +452,6 @@ st.sidebar.caption(
 )
 
 
-# -----------------------------
-# 가연물 입력
-# -----------------------------
 st.sidebar.subheader("비산거리 내 가연물 존재 여부")
 
 combustible_in_distance = st.sidebar.selectbox(
@@ -323,9 +460,6 @@ combustible_in_distance = st.sidebar.selectbox(
 )
 
 
-# -----------------------------
-# 계산
-# -----------------------------
 E = equipment_score / 100.0
 Dr = clamp(distance / 15.0)
 RHr = clamp(1.1 - 0.01 * humidity)
@@ -342,9 +476,6 @@ else:
 grade, action, grade_color = get_risk_grade(R)
 
 
-# -----------------------------
-# KPI
-# -----------------------------
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
@@ -360,12 +491,9 @@ with col4:
     st.metric("보폭 기준 확인거리", f"약 {distance_steps}보")
 
 with col5:
-    st.metric("습도 보정값 RHr", f"{RHr:.2f}")
+    st.metric("상대습도 보정값 RHr", f"{RHr:.2f}")
 
 
-# -----------------------------
-# 보폭 기준 확인 안내
-# -----------------------------
 st.subheader("보폭 기준 가연물 확인 범위")
 
 stride_box = (
@@ -386,9 +514,6 @@ stride_box = (
 st.markdown(stride_box, unsafe_allow_html=True)
 
 
-# -----------------------------
-# 게이지
-# -----------------------------
 left, right = st.columns([1.2, 1])
 
 with left:
@@ -433,9 +558,6 @@ with right:
     st.markdown(action_box, unsafe_allow_html=True)
 
 
-# -----------------------------
-# 비교 차트
-# -----------------------------
 c1, c2 = st.columns(2)
 
 with c1:
@@ -478,9 +600,6 @@ with c2:
     st.plotly_chart(fig_combustible, use_container_width=True)
 
 
-# -----------------------------
-# 현재 조건에서 가연물 유무 비교
-# -----------------------------
 st.subheader("현재 조건에서 가연물 유무에 따른 위험도 비교")
 
 M_with_combustible = clamp(0.75 + 0.25 * Dr)
@@ -517,9 +636,6 @@ fig_compare.update_layout(yaxis_range=[0, 100])
 st.plotly_chart(fig_compare, use_container_width=True)
 
 
-# -----------------------------
-# 높이별 위험도 비교 예시
-# -----------------------------
 st.subheader("작업 높이별 위험도 변화 예시")
 
 sample_heights = [1, 3, 5, 10, 15, 21]
@@ -566,9 +682,6 @@ fig_height.update_layout(yaxis_range=[0, 100])
 st.plotly_chart(fig_height, use_container_width=True)
 
 
-# -----------------------------
-# 세부 계산값
-# -----------------------------
 st.subheader("세부 계산값")
 
 result_df = pd.DataFrame({
@@ -607,5 +720,8 @@ result_df = pd.DataFrame({
 st.dataframe(result_df, use_container_width=True, hide_index=True)
 
 
-with st.expander("기상청 응답 디버깅 보기"):
+with st.expander("실황 응답 디버깅 보기"):
     st.write(st.session_state.weather_debug)
+
+with st.expander("예보 응답 디버깅 보기"):
+    st.write(st.session_state.fcst_debug)
