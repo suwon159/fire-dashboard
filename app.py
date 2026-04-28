@@ -33,12 +33,9 @@ def get_risk_grade(r):
 
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
 
-# 초단기실황용 격자
+# 현재 사용 중인 위치 격자
 NX = 59
 NY = 127
-
-# AWS 현천자료용 지점번호 (구로 AWS)
-AWS_STN = 423
 
 KST = timezone(timedelta(hours=9))
 
@@ -61,6 +58,26 @@ def get_ncst_base_datetime():
         base = now
 
     return base.strftime("%Y%m%d"), base.strftime("%H00")
+
+
+def get_fcst_base_datetime():
+    """
+    초단기예보:
+    - base_time = 30분(HH30)
+    - 매시각 45분 이후 호출 가능
+    예:
+    22:20 -> 21:30 사용
+    22:45 -> 22:30 사용
+    23:10 -> 22:30 사용
+    """
+    now = get_now_kst()
+
+    if now.minute < 45:
+        base = now - timedelta(hours=1)
+    else:
+        base = now
+
+    return base.strftime("%Y%m%d"), base.strftime("%H30")
 
 
 def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
@@ -98,6 +115,41 @@ def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
     return items
 
 
+def fetch_ultra_srt_fcst(nx, ny, base_date, base_time, auth_key):
+    url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtFcst"
+
+    params = {
+        "authKey": auth_key,
+        "numOfRows": "1000",
+        "pageNo": "1",
+        "dataType": "JSON",
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": str(nx),
+        "ny": str(ny),
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+
+    if "response" not in data:
+        raise RuntimeError(f"예보 응답 형식 오류: {data}")
+
+    header = data["response"].get("header", {})
+    result_code = str(header.get("resultCode", ""))
+    result_msg = header.get("resultMsg", "")
+
+    if result_code not in ("0", "00"):
+        raise RuntimeError(f"예보 API 오류: {result_code} / {result_msg}")
+
+    items = data["response"].get("body", {}).get("items", {}).get("item", [])
+    if not items:
+        raise RuntimeError("예보 데이터가 없습니다.")
+
+    return items
+
+
 def parse_kma_weather(items):
     temperature = None
     humidity = None
@@ -125,105 +177,81 @@ def parse_kma_weather(items):
     return temperature, humidity, wind_speed
 
 
-def get_aws_tm2():
+def parse_fcst_weather(items):
     """
-    AWS 현천자료 종료시각
-    실제 반영 지연을 고려해 10분 전 시각 사용
-    형식: YYYYMMDDHHMM (KST)
+    가장 가까운 예보시각의 SKY / PTY를 선택
     """
-    now = get_now_kst() - timedelta(minutes=10)
-    return now.strftime("%Y%m%d%H%M")
+    grouped = {}
+
+    for item in items:
+        fcst_date = item.get("fcstDate")
+        fcst_time = item.get("fcstTime")
+        category = item.get("category")
+        fcst_value = item.get("fcstValue")
+
+        if not fcst_date or not fcst_time or not category:
+            continue
+
+        key = f"{fcst_date}{fcst_time}"
+        if key not in grouped:
+            grouped[key] = {}
+
+        grouped[key][category] = fcst_value
+
+    if not grouped:
+        return None, None, None
+
+    now_kst = get_now_kst()
+    now_key = now_kst.strftime("%Y%m%d%H%M")
+
+    candidate_keys = sorted(grouped.keys())
+
+    selected_key = None
+    for key in candidate_keys:
+        if key >= now_key[:10] + "00":
+            selected_key = key
+            break
+
+    if selected_key is None:
+        selected_key = candidate_keys[0]
+
+    data = grouped[selected_key]
+    sky = data.get("SKY")
+    pty = data.get("PTY")
+
+    return selected_key, sky, pty
 
 
-def fetch_aws_weather_state(stn, tm2, auth_key):
-    """
-    1.8 AWS2 현천자료
-    최근 60분 구간 조회
-    typ01/text 포맷이라 JSON이 아니라 텍스트를 직접 파싱
-    """
-    url = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min_ww1"
-
-    params = {
-        "tm2": tm2,
-        "itv": "60",
-        "range": "60",
-        "stn": str(stn),
-        "disp": "1",
-        "help": "0",
-        "authKey": auth_key,
+def sky_to_text(sky):
+    sky_map = {
+        "1": "맑음",
+        "3": "구름많음",
+        "4": "흐림",
     }
-
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
-    text = response.text
-
-    if not text.strip():
-        raise RuntimeError("AWS 현천자료 응답이 비어 있습니다.")
-
-    return text
+    return sky_map.get(str(sky), "알 수 없음")
 
 
-def parse_aws_weather_state(raw_text):
-    """
-    최근 60분 구간 응답에서 마지막 유효 데이터 라인을 사용
-    주요 컬럼:
-    YYYYMMDDHHMI, STN, LON, LAT, S, N, WW1, NN1, ...
-    """
-    lines = raw_text.splitlines()
-    data_lines = []
-
-    for line in lines:
-        line = line.strip()
-
-        if not line:
-            continue
-
-        if line.startswith("#"):
-            continue
-
-        if not line[0].isdigit():
-            continue
-
-        parts = [p.strip() for p in line.split(",")]
-
-        if len(parts) >= 7:
-            data_lines.append(parts)
-
-    if not data_lines:
-        raise RuntimeError("AWS 현천자료에서 데이터 라인을 찾지 못했습니다.")
-
-    parts = data_lines[-1]
-    obs_time = parts[0]
-    stn = parts[1]
-    ww1 = parts[6]
-
-    return obs_time, stn, ww1, ",".join(parts)
+def pty_to_text(pty):
+    pty_map = {
+        "0": "없음",
+        "1": "비",
+        "2": "비/눈",
+        "3": "눈",
+        "4": "소나기",
+        "5": "빗방울",
+        "6": "빗방울눈날림",
+        "7": "눈날림",
+    }
+    return pty_map.get(str(pty), "알 수 없음")
 
 
-def ww1_to_text(code):
-    try:
-        code = int(code)
-    except Exception:
-        return "알 수 없음"
+def make_today_weather_text(sky, pty):
+    pty_text = pty_to_text(pty)
 
-    if 0 <= code <= 2:
-        return "맑음"
-    if code == 4:
-        return "연무"
-    if code == 10:
-        return "박무"
-    if code == 30:
-        return "안개"
-    if 40 <= code <= 42:
-        return "비"
-    if 50 <= code <= 59:
-        return "안개비"
-    if 60 <= code <= 68:
-        return "비"
-    if 71 <= code <= 76:
-        return "눈"
+    if str(pty) != "0":
+        return pty_text
 
-    return f"현천코드 {code}"
+    return sky_to_text(sky)
 
 
 equipment_scores = {
@@ -272,14 +300,17 @@ if "today_weather" not in st.session_state:
 if "weather_debug" not in st.session_state:
     st.session_state.weather_debug = ""
 
-if "aws_debug" not in st.session_state:
-    st.session_state.aws_debug = ""
+if "fcst_debug" not in st.session_state:
+    st.session_state.fcst_debug = ""
 
 if "last_ncst_base" not in st.session_state:
     st.session_state.last_ncst_base = ""
 
-if "last_aws_tm" not in st.session_state:
-    st.session_state.last_aws_tm = ""
+if "last_fcst_base" not in st.session_state:
+    st.session_state.last_fcst_base = ""
+
+if "last_fcst_target" not in st.session_state:
+    st.session_state.last_fcst_target = ""
 
 
 st.sidebar.header("입력 데이터")
@@ -310,10 +341,10 @@ if use_kma_weather:
     if st.sidebar.button("기상청 값 불러오기"):
         try:
             ncst_base_date, ncst_base_time = get_ncst_base_datetime()
-            aws_tm2 = get_aws_tm2()
+            fcst_base_date, fcst_base_time = get_fcst_base_datetime()
 
             st.session_state.last_ncst_base = f"{ncst_base_date} {ncst_base_time}"
-            st.session_state.last_aws_tm = aws_tm2
+            st.session_state.last_fcst_base = f"{fcst_base_date} {fcst_base_time}"
 
             ncst_items = fetch_ultra_srt_ncst(
                 nx=NX,
@@ -323,17 +354,19 @@ if use_kma_weather:
                 auth_key=AUTH_KEY
             )
 
-            aws_text = fetch_aws_weather_state(
-                stn=AWS_STN,
-                tm2=aws_tm2,
+            fcst_items = fetch_ultra_srt_fcst(
+                nx=NX,
+                ny=NY,
+                base_date=fcst_base_date,
+                base_time=fcst_base_time,
                 auth_key=AUTH_KEY
             )
 
             temp, hum, wind = parse_kma_weather(ncst_items)
-            obs_time, stn, ww1, latest_line = parse_aws_weather_state(aws_text)
+            fcst_target, sky, pty = parse_fcst_weather(fcst_items)
 
             st.session_state.weather_debug = str(ncst_items)
-            st.session_state.aws_debug = aws_text
+            st.session_state.fcst_debug = str(fcst_items)
 
             if temp is not None:
                 st.session_state.temperature = temp
@@ -342,8 +375,8 @@ if use_kma_weather:
             if wind is not None:
                 st.session_state.wind_speed = wind
 
-            st.session_state.today_weather = ww1_to_text(ww1)
-            st.session_state.last_aws_tm = obs_time
+            st.session_state.today_weather = make_today_weather_text(sky, pty)
+            st.session_state.last_fcst_target = fcst_target if fcst_target else ""
 
             st.sidebar.success("기상청 값 불러오기 성공")
 
@@ -353,10 +386,14 @@ if use_kma_weather:
 if st.session_state.last_ncst_base:
     st.sidebar.caption(f"실황 기준시각: {st.session_state.last_ncst_base}")
 
-if st.session_state.last_aws_tm:
-    st.sidebar.caption(f"AWS 현천 기준시각: {st.session_state.last_aws_tm}")
+if st.session_state.last_fcst_base:
+    st.sidebar.caption(f"예보 발표시각: {st.session_state.last_fcst_base}")
 
-st.subheader(f"현재 날씨: {st.session_state.today_weather}")
+if st.session_state.last_fcst_target:
+    st.sidebar.caption(f"날씨 상태 적용시각: {st.session_state.last_fcst_target}")
+
+
+st.subheader(f"오늘의 날씨: {st.session_state.today_weather}")
 
 temperature = st.sidebar.number_input(
     "기온(℃)",
@@ -392,6 +429,7 @@ wind_speed = st.sidebar.number_input(
 
 distance = calculate_scattering_distance(work_height, wind_speed)
 
+
 STRIDE_LENGTH_M = 0.6
 distance_steps = math.ceil(distance / STRIDE_LENGTH_M)
 
@@ -413,12 +451,14 @@ st.sidebar.caption(
     f"성인 남성 평균 보폭 0.6m 기준으로 약 {distance_steps}보 이내를 확인하세요."
 )
 
+
 st.sidebar.subheader("비산거리 내 가연물 존재 여부")
 
 combustible_in_distance = st.sidebar.selectbox(
     f"계산된 비산거리 {distance:.2f}m, 약 {distance_steps}보 이내에 가연물이 있습니까?",
     ["없음", "있음"]
 )
+
 
 E = equipment_score / 100.0
 Dr = clamp(distance / 15.0)
@@ -434,6 +474,7 @@ else:
     R = E * W * M_adj
 
 grade, action, grade_color = get_risk_grade(R)
+
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -451,6 +492,7 @@ with col4:
 
 with col5:
     st.metric("상대습도 보정값 RHr", f"{RHr:.2f}")
+
 
 st.subheader("보폭 기준 가연물 확인 범위")
 
@@ -470,6 +512,7 @@ stride_box = (
 )
 
 st.markdown(stride_box, unsafe_allow_html=True)
+
 
 left, right = st.columns([1.2, 1])
 
@@ -514,6 +557,7 @@ with right:
 
     st.markdown(action_box, unsafe_allow_html=True)
 
+
 c1, c2 = st.columns(2)
 
 with c1:
@@ -555,6 +599,7 @@ with c2:
 
     st.plotly_chart(fig_combustible, use_container_width=True)
 
+
 st.subheader("현재 조건에서 가연물 유무에 따른 위험도 비교")
 
 M_with_combustible = clamp(0.75 + 0.25 * Dr)
@@ -589,6 +634,7 @@ fig_compare.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
 fig_compare.update_layout(yaxis_range=[0, 100])
 
 st.plotly_chart(fig_compare, use_container_width=True)
+
 
 st.subheader("작업 높이별 위험도 변화 예시")
 
@@ -635,6 +681,7 @@ fig_height.update_layout(yaxis_range=[0, 100])
 
 st.plotly_chart(fig_height, use_container_width=True)
 
+
 st.subheader("세부 계산값")
 
 result_df = pd.DataFrame({
@@ -651,8 +698,7 @@ result_df = pd.DataFrame({
         "W",
         "비산거리 내 가연물 존재 여부",
         "M_adj(보정)",
-        "R",
-        "현재 날씨"
+        "R"
     ],
     "값": [
         round(equipment_score, 3),
@@ -667,15 +713,15 @@ result_df = pd.DataFrame({
         round(W, 3),
         combustible_in_distance,
         round(M_adj, 3),
-        round(R, 3),
-        st.session_state.today_weather
+        round(R, 3)
     ]
 })
 
 st.dataframe(result_df, use_container_width=True, hide_index=True)
 
+
 with st.expander("실황 응답 디버깅 보기"):
     st.write(st.session_state.weather_debug)
 
-with st.expander("AWS 현천 응답 디버깅 보기"):
-    st.text(st.session_state.aws_debug)
+with st.expander("예보 응답 디버깅 보기"):
+    st.write(st.session_state.fcst_debug)
