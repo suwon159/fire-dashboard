@@ -1,16 +1,10 @@
-# 260422 업데이트
-# 기존 장비 / 기온 / 습도 / 풍속 / 비산거리 / 기상위험도 계산식 유지
-# 5m / 10m / 15m 가연물 입력 제거
-# 산출된 비산거리 내 가연물 존재 여부로 최종 위험도 계산
-# 성인 남성 평균 보폭 0.6m 기준으로 비산거리를 보폭 수로 환산
-# 주요 위험요인 제거 버전
-# 세부 계산값 이후 계산식 설명 제거 버전
-
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 import math
+import requests
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="건설현장 화재위험도 대시보드", layout="wide")
 
@@ -20,8 +14,6 @@ def clamp(value, min_value=0.0, max_value=1.0):
 
 
 def calculate_scattering_distance(height, wind_speed):
-    # 기존 비산거리 공식 유지
-    # D = 15 * (1 - e^(-0.08H(1 + 0.3V)))
     D = 15 * (1 - math.exp(-0.08 * height * (1 + 0.3 * wind_speed)))
     return D
 
@@ -37,6 +29,103 @@ def get_risk_grade(r):
         return "위험", "비산방지포 설치 및 작업허가 재확인 필요", "#e74c3c"
     else:
         return "매우위험", "작업 중지 검토 및 관리자 승인 필요", "#8e0000"
+
+
+# -----------------------------
+# 기상청 API Hub 설정
+# -----------------------------
+AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
+
+# 구로디지털단지 / 현대건설기술교육원 적용용
+NX = 59
+NY = 125
+
+
+def get_base_datetime():
+    """
+    초단기실황은 매시각 10분 이후 현재 시각 자료 호출 가능
+    예:
+    14:03 -> 13:00 사용
+    14:10 -> 14:00 사용
+    14:35 -> 14:00 사용
+    """
+    now = datetime.now()
+
+    if now.minute < 10:
+        base = now - timedelta(hours=1)
+    else:
+        base = now
+
+    base_date = base.strftime("%Y%m%d")
+    base_time = base.strftime("%H00")
+    return base_date, base_time
+
+
+def fetch_kma_weather(nx, ny, base_date, base_time, auth_key):
+    url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
+
+    params = {
+        "authKey": auth_key,
+        "numOfRows": "1000",
+        "pageNo": "1",
+        "dataType": "JSON",
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": str(nx),
+        "ny": str(ny),
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
+
+    data = response.json()
+
+    # 디버깅용: 응답 형식 자체가 다른 경우
+    if "response" not in data:
+        raise RuntimeError(f"응답 형식 오류: {data}")
+
+    header = data["response"].get("header", {})
+    result_code = str(header.get("resultCode", ""))
+    result_msg = header.get("resultMsg", "")
+
+    # 가이드상 정상 코드는 0 또는 00 형태로 올 수 있음
+    if result_code not in ("0", "00"):
+        raise RuntimeError(f"기상청 API 오류: {result_code} / {result_msg}")
+
+    body = data["response"].get("body", {})
+    items = body.get("items", {}).get("item", [])
+
+    if not items:
+        raise RuntimeError("응답에 실황 데이터가 없습니다.")
+
+    return items
+
+
+def parse_kma_weather(items):
+    temperature = None
+    humidity = None
+    wind_speed = None
+
+    for item in items:
+        category = item.get("category")
+        raw_value = item.get("obsrValue")
+
+        if raw_value is None:
+            continue
+
+        try:
+            value = float(raw_value)
+        except Exception:
+            continue
+
+        if category == "T1H":
+            temperature = value
+        elif category == "REH":
+            humidity = value
+        elif category == "WSD":
+            wind_speed = value
+
+    return temperature, humidity, wind_speed
 
 
 equipment_scores = {
@@ -61,9 +150,6 @@ equipment_scores = {
 }
 
 
-# -----------------------------
-# 제목
-# -----------------------------
 st.title("건설현장 화재위험도 대시보드")
 
 st.markdown(
@@ -71,6 +157,31 @@ st.markdown(
     "최종 화재위험도를 계산합니다. "
     "비산거리(D)는 작업높이(H)와 풍속(V)으로 자동 계산됩니다."
 )
+
+# 지금 실행 중인 파일이 맞는지 확인용
+st.caption(f"현재 AUTH_KEY = {AUTH_KEY}")
+
+
+# -----------------------------
+# session_state 초기화
+# -----------------------------
+if "temperature" not in st.session_state:
+    st.session_state.temperature = 30.0
+
+if "humidity" not in st.session_state:
+    st.session_state.humidity = 40.0
+
+if "wind_speed" not in st.session_state:
+    st.session_state.wind_speed = 3.0
+
+if "weather_debug" not in st.session_state:
+    st.session_state.weather_debug = ""
+
+if "last_base_date" not in st.session_state:
+    st.session_state.last_base_date = ""
+
+if "last_base_time" not in st.session_state:
+    st.session_state.last_base_time = ""
 
 
 # -----------------------------
@@ -97,11 +208,52 @@ else:
         disabled=True
     )
 
+
+# -----------------------------
+# 기상청 실시간 값 가져오기
+# -----------------------------
+use_kma_weather = st.sidebar.checkbox("기상청 실시간 값 사용", value=False)
+
+if use_kma_weather:
+    if st.sidebar.button("기상청 값 불러오기"):
+        try:
+            base_date, base_time = get_base_datetime()
+            st.session_state.last_base_date = base_date
+            st.session_state.last_base_time = base_time
+
+            items = fetch_kma_weather(
+                nx=NX,
+                ny=NY,
+                base_date=base_date,
+                base_time=base_time,
+                auth_key=AUTH_KEY
+            )
+
+            temp, hum, wind = parse_kma_weather(items)
+            st.session_state.weather_debug = str(items)
+
+            if temp is not None:
+                st.session_state.temperature = temp
+            if hum is not None:
+                st.session_state.humidity = hum
+            if wind is not None:
+                st.session_state.wind_speed = wind
+
+            st.sidebar.success(f"기상청 값 불러오기 성공 ({base_date} {base_time})")
+
+        except Exception as e:
+            st.sidebar.error(f"기상청 값 조회 실패: {e}")
+
+if st.session_state.last_base_date and st.session_state.last_base_time:
+    st.sidebar.caption(
+        f"최근 조회 기준시각: {st.session_state.last_base_date} {st.session_state.last_base_time}"
+    )
+
 temperature = st.sidebar.number_input(
     "기온(℃)",
-    min_value=0.0,
+    min_value=-30.0,
     max_value=60.0,
-    value=30.0,
+    value=float(st.session_state.temperature),
     step=0.1
 )
 
@@ -109,7 +261,7 @@ humidity = st.sidebar.number_input(
     "습도(%)",
     min_value=0.0,
     max_value=100.0,
-    value=40.0,
+    value=float(st.session_state.humidity),
     step=0.1
 )
 
@@ -125,7 +277,7 @@ wind_speed = st.sidebar.number_input(
     "풍속 V(m/s)",
     min_value=0.0,
     max_value=30.0,
-    value=3.0,
+    value=float(st.session_state.wind_speed),
     step=0.1
 )
 
@@ -171,23 +323,12 @@ combustible_in_distance = st.sidebar.selectbox(
 # -----------------------------
 # 계산
 # -----------------------------
-
-# 기존 장비 위험도 계산식 유지
 E = equipment_score / 100.0
-
-# 기존 비산거리 정규화 유지
 Dr = clamp(distance / 15.0)
-
-# 기존 습도 보정값 유지
 RHr = clamp(1.1 - 0.01 * humidity)
-
-# 기존 기온 정규화 유지
 Tr = clamp(temperature / 40.0)
-
-# 기존 기상 위험도 계산식 유지
 W = clamp(2.9393 * Dr * RHr * Tr)
 
-# 비산거리 내 가연물 존재 여부 반영
 if combustible_in_distance == "있음":
     M_adj = clamp(0.75 + 0.25 * Dr)
     R = E * W * M_adj
@@ -461,3 +602,7 @@ result_df = pd.DataFrame({
 })
 
 st.dataframe(result_df, use_container_width=True, hide_index=True)
+
+
+with st.expander("기상청 응답 디버깅 보기"):
+    st.write(st.session_state.weather_debug)
