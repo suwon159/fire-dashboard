@@ -125,9 +125,9 @@ def parse_kma_weather(items):
     return temperature, humidity, wind_speed
 
 
-def get_aws_tm():
+def get_aws_tm2():
     """
-    AWS 매분자료 조회용 시각
+    AWS 현천자료 종료시각
     실제 반영 지연을 고려해 10분 전 시각 사용
     형식: YYYYMMDDHHMM (KST)
     """
@@ -135,15 +135,18 @@ def get_aws_tm():
     return now.strftime("%Y%m%d%H%M")
 
 
-def fetch_aws_weather_state(stn, tm, auth_key):
+def fetch_aws_weather_state(stn, tm2, auth_key):
     """
     1.8 AWS2 현천자료
+    최근 60분 구간 조회
     typ01/text 포맷이라 JSON이 아니라 텍스트를 직접 파싱
     """
     url = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min_ww1"
 
     params = {
-        "tm": tm,
+        "tm2": tm2,
+        "itv": "60",
+        "range": "60",
         "stn": str(stn),
         "disp": "1",
         "help": "0",
@@ -162,11 +165,12 @@ def fetch_aws_weather_state(stn, tm, auth_key):
 
 def parse_aws_weather_state(raw_text):
     """
-    텍스트 응답에서 첫 번째 유효 데이터 라인을 파싱
+    최근 60분 구간 응답에서 마지막 유효 데이터 라인을 사용
     주요 컬럼:
     YYYYMMDDHHMI, STN, LON, LAT, S, N, WW1, NN1, ...
     """
     lines = raw_text.splitlines()
+    data_lines = []
 
     for line in lines:
         line = line.strip()
@@ -183,12 +187,17 @@ def parse_aws_weather_state(raw_text):
         parts = [p.strip() for p in line.split(",")]
 
         if len(parts) >= 7:
-            obs_time = parts[0]
-            stn = parts[1]
-            ww1 = parts[6]
-            return obs_time, stn, ww1, line
+            data_lines.append(parts)
 
-    raise RuntimeError("AWS 현천자료에서 데이터 라인을 찾지 못했습니다.")
+    if not data_lines:
+        raise RuntimeError("AWS 현천자료에서 데이터 라인을 찾지 못했습니다.")
+
+    parts = data_lines[-1]
+    obs_time = parts[0]
+    stn = parts[1]
+    ww1 = parts[6]
+
+    return obs_time, stn, ww1, ",".join(parts)
 
 
 def ww1_to_text(code):
@@ -301,10 +310,10 @@ if use_kma_weather:
     if st.sidebar.button("기상청 값 불러오기"):
         try:
             ncst_base_date, ncst_base_time = get_ncst_base_datetime()
-            aws_tm = get_aws_tm()
+            aws_tm2 = get_aws_tm2()
 
             st.session_state.last_ncst_base = f"{ncst_base_date} {ncst_base_time}"
-            st.session_state.last_aws_tm = aws_tm
+            st.session_state.last_aws_tm = aws_tm2
 
             ncst_items = fetch_ultra_srt_ncst(
                 nx=NX,
@@ -316,7 +325,7 @@ if use_kma_weather:
 
             aws_text = fetch_aws_weather_state(
                 stn=AWS_STN,
-                tm=aws_tm,
+                tm2=aws_tm2,
                 auth_key=AUTH_KEY
             )
 
