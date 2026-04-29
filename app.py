@@ -14,8 +14,7 @@ def clamp(value, min_value=0.0, max_value=1.0):
 
 
 def calculate_scattering_distance(height, wind_speed):
-    D = 15 * (1 - math.exp(-0.08 * height * (1 + 0.3 * wind_speed)))
-    return D
+    return 15 * (1 - math.exp(-0.08 * height * (1 + 0.3 * wind_speed)))
 
 
 def get_risk_grade(r):
@@ -33,7 +32,6 @@ def get_risk_grade(r):
 
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
 
-# 현재 사용 중인 위치 격자
 NX = 59
 NY = 127
 
@@ -45,44 +43,25 @@ def get_now_kst():
 
 
 def get_ncst_base_datetime():
-    """
-    초단기실황:
-    - base_time = 정시(HH00)
-    - 매시각 10분 이후 호출 가능
-    """
     now = get_now_kst()
-
     if now.minute < 10:
         base = now - timedelta(hours=1)
     else:
         base = now
-
     return base.strftime("%Y%m%d"), base.strftime("%H00")
 
 
 def get_fcst_base_datetime():
-    """
-    초단기예보:
-    - base_time = 30분(HH30)
-    - 매시각 45분 이후 호출 가능
-    예:
-    22:20 -> 21:30 사용
-    22:45 -> 22:30 사용
-    23:10 -> 22:30 사용
-    """
     now = get_now_kst()
-
     if now.minute < 45:
         base = now - timedelta(hours=1)
     else:
         base = now
-
     return base.strftime("%Y%m%d"), base.strftime("%H30")
 
 
 def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
     url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
-
     params = {
         "authKey": auth_key,
         "numOfRows": "1000",
@@ -117,7 +96,6 @@ def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
 
 def fetch_ultra_srt_fcst(nx, ny, base_date, base_time, auth_key):
     url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtFcst"
-
     params = {
         "authKey": auth_key,
         "numOfRows": "1000",
@@ -178,9 +156,6 @@ def parse_kma_weather(items):
 
 
 def parse_fcst_weather(items):
-    """
-    가장 가까운 예보시각의 SKY / PTY를 선택
-    """
     grouped = {}
 
     for item in items:
@@ -201,19 +176,8 @@ def parse_fcst_weather(items):
     if not grouped:
         return None, None, None
 
-    now_kst = get_now_kst()
-    now_key = now_kst.strftime("%Y%m%d%H%M")
-
     candidate_keys = sorted(grouped.keys())
-
-    selected_key = None
-    for key in candidate_keys:
-        if key >= now_key[:10] + "00":
-            selected_key = key
-            break
-
-    if selected_key is None:
-        selected_key = candidate_keys[0]
+    selected_key = candidate_keys[0]
 
     data = grouped[selected_key]
     sky = data.get("SKY")
@@ -247,10 +211,8 @@ def pty_to_text(pty):
 
 def make_today_weather_text(sky, pty):
     pty_text = pty_to_text(pty)
-
     if str(pty) != "0":
         return pty_text
-
     return sky_to_text(sky)
 
 
@@ -284,7 +246,6 @@ st.markdown(
     "비산거리(D)는 작업높이(H)와 풍속(V)으로 자동 계산됩니다."
 )
 
-
 if "temperature" not in st.session_state:
     st.session_state.temperature = 30.0
 
@@ -312,6 +273,9 @@ if "last_fcst_base" not in st.session_state:
 if "last_fcst_target" not in st.session_state:
     st.session_state.last_fcst_target = ""
 
+if "weather_locked" not in st.session_state:
+    st.session_state.weather_locked = False
+
 
 st.sidebar.header("입력 데이터")
 
@@ -334,8 +298,10 @@ else:
         disabled=True
     )
 
-
 use_kma_weather = st.sidebar.checkbox("기상청 실시간 값 사용", value=False)
+
+if not use_kma_weather:
+    st.session_state.weather_locked = False
 
 if use_kma_weather:
     if st.sidebar.button("기상청 값 불러오기"):
@@ -377,6 +343,7 @@ if use_kma_weather:
 
             st.session_state.today_weather = make_today_weather_text(sky, pty)
             st.session_state.last_fcst_target = fcst_target if fcst_target else ""
+            st.session_state.weather_locked = True
 
             st.sidebar.success("기상청 값 불러오기 성공")
 
@@ -392,15 +359,17 @@ if st.session_state.last_fcst_base:
 if st.session_state.last_fcst_target:
     st.sidebar.caption(f"날씨 상태 적용시각: {st.session_state.last_fcst_target}")
 
-
 st.subheader(f"오늘의 날씨: {st.session_state.today_weather}")
+
+weather_input_disabled = st.session_state.weather_locked and use_kma_weather
 
 temperature = st.sidebar.number_input(
     "기온(℃)",
     min_value=-30.0,
     max_value=60.0,
     value=float(st.session_state.temperature),
-    step=0.1
+    step=0.1,
+    disabled=weather_input_disabled
 )
 
 humidity = st.sidebar.number_input(
@@ -408,15 +377,8 @@ humidity = st.sidebar.number_input(
     min_value=0.0,
     max_value=100.0,
     value=float(st.session_state.humidity),
-    step=0.1
-)
-
-work_height = st.sidebar.number_input(
-    "작업 높이 H(m)",
-    min_value=0.1,
-    max_value=21.0,
-    value=5.0,
-    step=0.1
+    step=0.1,
+    disabled=weather_input_disabled
 )
 
 wind_speed = st.sidebar.number_input(
@@ -424,11 +386,20 @@ wind_speed = st.sidebar.number_input(
     min_value=0.0,
     max_value=30.0,
     value=float(st.session_state.wind_speed),
-    step=0.1
+    step=0.1,
+    disabled=weather_input_disabled
+)
+
+work_height = st.sidebar.number_input(
+    "작업 높이 H(m)",
+    min_value=0.1,
+    max_value=21.0,
+    value=5.0,
+    step=0.1,
+    help="❗ 한 층의 높이는 대략 2.3~2.5m이며, 작업 층수에 약 2.5를 곱한 높이로 생각해주시기 바랍니다. 지하층 작업의 경우 바닥면은 50cm, 천장면에서의 작업의 경우 2m로 설정해주시기 바랍니다."
 )
 
 distance = calculate_scattering_distance(work_height, wind_speed)
-
 
 STRIDE_LENGTH_M = 0.6
 distance_steps = math.ceil(distance / STRIDE_LENGTH_M)
@@ -451,14 +422,12 @@ st.sidebar.caption(
     f"성인 남성 평균 보폭 0.6m 기준으로 약 {distance_steps}보 이내를 확인하세요."
 )
 
-
 st.sidebar.subheader("비산거리 내 가연물 존재 여부")
 
 combustible_in_distance = st.sidebar.selectbox(
     f"계산된 비산거리 {distance:.2f}m, 약 {distance_steps}보 이내에 가연물이 있습니까?",
     ["없음", "있음"]
 )
-
 
 E = equipment_score / 100.0
 Dr = clamp(distance / 15.0)
@@ -474,7 +443,6 @@ else:
     R = E * W * M_adj
 
 grade, action, grade_color = get_risk_grade(R)
-
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -492,7 +460,6 @@ with col4:
 
 with col5:
     st.metric("상대습도 보정값 RHr", f"{RHr:.2f}")
-
 
 st.subheader("보폭 기준 가연물 확인 범위")
 
@@ -512,7 +479,6 @@ stride_box = (
 )
 
 st.markdown(stride_box, unsafe_allow_html=True)
-
 
 left, right = st.columns([1.2, 1])
 
@@ -557,7 +523,6 @@ with right:
 
     st.markdown(action_box, unsafe_allow_html=True)
 
-
 c1, c2 = st.columns(2)
 
 with c1:
@@ -599,7 +564,6 @@ with c2:
 
     st.plotly_chart(fig_combustible, use_container_width=True)
 
-
 st.subheader("현재 조건에서 가연물 유무에 따른 위험도 비교")
 
 M_with_combustible = clamp(0.75 + 0.25 * Dr)
@@ -634,7 +598,6 @@ fig_compare.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
 fig_compare.update_layout(yaxis_range=[0, 100])
 
 st.plotly_chart(fig_compare, use_container_width=True)
-
 
 st.subheader("작업 높이별 위험도 변화 예시")
 
@@ -681,7 +644,6 @@ fig_height.update_layout(yaxis_range=[0, 100])
 
 st.plotly_chart(fig_height, use_container_width=True)
 
-
 st.subheader("세부 계산값")
 
 result_df = pd.DataFrame({
@@ -698,7 +660,8 @@ result_df = pd.DataFrame({
         "W",
         "비산거리 내 가연물 존재 여부",
         "M_adj(보정)",
-        "R"
+        "R",
+        "오늘의 날씨"
     ],
     "값": [
         round(equipment_score, 3),
@@ -713,12 +676,12 @@ result_df = pd.DataFrame({
         round(W, 3),
         combustible_in_distance,
         round(M_adj, 3),
-        round(R, 3)
+        round(R, 3),
+        st.session_state.today_weather
     ]
 })
 
 st.dataframe(result_df, use_container_width=True, hide_index=True)
-
 
 with st.expander("실황 응답 디버깅 보기"):
     st.write(st.session_state.weather_debug)
