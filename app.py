@@ -73,7 +73,7 @@ def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
         "ny": str(ny),
     }
 
-    response = requests.get(url, params=params, timeout=10)
+    response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()
 
