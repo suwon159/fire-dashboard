@@ -4,6 +4,7 @@ import plotly.express as px
 import pandas as pd
 import math
 import requests
+import time
 from datetime import datetime, timedelta, timezone
 
 st.set_page_config(page_title="건설현장 화재위험도 대시보드", layout="wide")
@@ -18,16 +19,12 @@ def calculate_scattering_distance(height, wind_speed):
 
 
 def get_risk_grade(r):
-    if r <= 0.20:
-        return "안전", "작업 가능, 기본 안전수칙 준수", "#2ecc71"
-    elif r <= 0.40:
-        return "주의", "주변 가연물 정리 및 기본 소화기 배치", "#f1c40f"
-    elif r <= 0.60:
-        return "경계", "화기감시자 배치 및 소화기 추가 배치 권고", "#f39c12"
-    elif r <= 0.80:
-        return "위험", "비산방지포 설치 및 작업허가 재확인 필요", "#e74c3c"
+    if r <= 0.25:
+        return "안전", "작업 가능, 기본 안전수칙을 준수하세요.", "#2ecc71"
+    elif r <= 0.70:
+        return "주의", "주변 가연물 정리, 소화기 배치, 화기 작업 조건을 확인하세요.", "#f1c40f"
     else:
-        return "매우위험", "작업 중지 검토 및 관리자 승인 필요", "#8e0000"
+        return "위험", "작업 전 관리자 확인, 화기감시자 배치, 가연물 제거 후 작업하세요.", "#e74c3c"
 
 
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
@@ -60,6 +57,27 @@ def get_fcst_base_datetime():
     return base.strftime("%Y%m%d"), base.strftime("%H30")
 
 
+def get_with_retry(url, params, timeout=30, retries=3, sleep_seconds=1):
+    last_error = None
+
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(sleep_seconds)
+            else:
+                raise
+        except requests.exceptions.RequestException:
+            raise
+
+    if last_error:
+        raise last_error
+
+
 def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
     url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst"
     params = {
@@ -73,8 +91,7 @@ def fetch_ultra_srt_ncst(nx, ny, base_date, base_time, auth_key):
         "ny": str(ny),
     }
 
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
+    response = get_with_retry(url, params=params, timeout=30, retries=3, sleep_seconds=1)
     data = response.json()
 
     if "response" not in data:
@@ -107,8 +124,7 @@ def fetch_ultra_srt_fcst(nx, ny, base_date, base_time, auth_key):
         "ny": str(ny),
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
+    response = get_with_retry(url, params=params, timeout=30, retries=3, sleep_seconds=1)
     data = response.json()
 
     if "response" not in data:
@@ -347,6 +363,12 @@ if use_kma_weather:
 
             st.sidebar.success("기상청 값 불러오기 성공")
 
+        except requests.exceptions.Timeout:
+            st.sidebar.error("기상청 서버 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.")
+        except requests.exceptions.ConnectionError:
+            st.sidebar.error("기상청 서버 연결이 불안정합니다. 잠시 후 다시 시도해 주세요.")
+        except requests.exceptions.RequestException as e:
+            st.sidebar.error(f"기상청 값 조회 실패: {e}")
         except Exception as e:
             st.sidebar.error(f"기상청 값 조회 실패: {e}")
 
@@ -493,11 +515,9 @@ with left:
             "axis": {"range": [0, 100]},
             "bar": {"color": grade_color},
             "steps": [
-                {"range": [0, 20], "color": "#d5f5e3"},
-                {"range": [20, 40], "color": "#fcf3cf"},
-                {"range": [40, 60], "color": "#fdebd0"},
-                {"range": [60, 80], "color": "#f5b7b1"},
-                {"range": [80, 100], "color": "#d98880"},
+                {"range": [0, 25], "color": "#d5f5e3"},
+                {"range": [25, 70], "color": "#fcf3cf"},
+                {"range": [70, 100], "color": "#f5b7b1"},
             ],
         }
     ))
@@ -572,6 +592,9 @@ R_with_combustible = E * W * M_with_combustible
 M_without_combustible = clamp(0.20 + 0.10 * Dr)
 R_without_combustible = E * W * M_without_combustible
 
+grade_without, _, _ = get_risk_grade(R_without_combustible)
+grade_with, _, _ = get_risk_grade(R_with_combustible)
+
 df_compare = pd.DataFrame({
     "조건": [
         "비산거리 내 가연물 없음",
@@ -584,6 +607,10 @@ df_compare = pd.DataFrame({
     "최종 위험도(%)": [
         round(R_without_combustible * 100, 1),
         round(R_with_combustible * 100, 1)
+    ],
+    "위험등급": [
+        grade_without,
+        grade_with
     ]
 })
 
@@ -591,10 +618,10 @@ fig_compare = px.bar(
     df_compare,
     x="조건",
     y="최종 위험도(%)",
-    text="최종 위험도(%)"
+    text="위험등급"
 )
 
-fig_compare.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+fig_compare.update_traces(textposition="outside")
 fig_compare.update_layout(yaxis_range=[0, 100])
 
 st.plotly_chart(fig_compare, use_container_width=True)
@@ -617,6 +644,9 @@ for h in sample_heights:
     sample_m_without = clamp(0.20 + 0.10 * sample_dr)
     sample_r_without = E * sample_w * sample_m_without
 
+    sample_grade_with, _, _ = get_risk_grade(sample_r_with)
+    sample_grade_without, _, _ = get_risk_grade(sample_r_without)
+
     sample_results.append({
         "작업 높이(m)": h,
         "비산거리 D(m)": round(sample_distance, 2),
@@ -625,8 +655,10 @@ for h in sample_heights:
         "W": round(sample_w, 3),
         "가연물 있음 M_adj": round(sample_m_with, 3),
         "가연물 있음 위험도(%)": round(sample_r_with * 100, 1),
+        "가연물 있음 등급": sample_grade_with,
         "가연물 없음 M_adj": round(sample_m_without, 3),
-        "가연물 없음 위험도(%)": round(sample_r_without * 100, 1)
+        "가연물 없음 위험도(%)": round(sample_r_without * 100, 1),
+        "가연물 없음 등급": sample_grade_without
     })
 
 df_height_compare = pd.DataFrame(sample_results)
@@ -661,6 +693,7 @@ result_df = pd.DataFrame({
         "비산거리 내 가연물 존재 여부",
         "M_adj(보정)",
         "R",
+        "위험등급",
         "오늘의 날씨"
     ],
     "값": [
@@ -677,14 +710,9 @@ result_df = pd.DataFrame({
         combustible_in_distance,
         round(M_adj, 3),
         round(R, 3),
+        grade,
         st.session_state.today_weather
     ]
 })
 
 st.dataframe(result_df, use_container_width=True, hide_index=True)
-
-with st.expander("실황 응답 디버깅 보기"):
-    st.write(st.session_state.weather_debug)
-
-with st.expander("예보 응답 디버깅 보기"):
-    st.write(st.session_state.fcst_debug)
