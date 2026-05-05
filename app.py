@@ -19,7 +19,7 @@ def calculate_scattering_distance(height, wind_speed):
 
 
 def get_risk_grade(r):
-    if r <= 0.25:
+    if r <= 0.30:
         return "안전", "작업 가능, 기본 안전수칙을 준수하세요.", "#2ecc71"
     elif r <= 0.80:
         return "주의", "주변 가연물 정리, 소화기 배치, 화기 작업 조건을 확인하세요.", "#f1c40f"
@@ -515,9 +515,9 @@ with left:
             "axis": {"range": [0, 100]},
             "bar": {"color": grade_color},
             "steps": [
-                {"range": [0, 25], "color": "#d5f5e3"},
-                {"range": [25, 70], "color": "#fcf3cf"},
-                {"range": [70, 100], "color": "#f5b7b1"},
+                {"range": [0, 30], "color": "#d5f5e3"},
+                {"range": [30, 80], "color": "#fcf3cf"},
+                {"range": [80, 100], "color": "#f5b7b1"},
             ],
         }
     ))
