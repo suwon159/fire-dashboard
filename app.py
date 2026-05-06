@@ -123,20 +123,20 @@ st.markdown(
         font-size: 0.9rem;
         font-weight: 700;
         color: #566573;
-        margin-bottom: 4px;
+        margin-bottom: 6px;
     }
 
     .small-info-main {
-        font-size: 1.45rem;
+        font-size: 1.15rem;
         font-weight: 900;
-        line-height: 1.35;
+        line-height: 1.45;
     }
 
     .small-info-sub {
-        font-size: 1.2rem;
-        font-weight: 800;
-        line-height: 1.35;
-        margin-top: 4px;
+        font-size: 1.25rem;
+        font-weight: 900;
+        line-height: 1.45;
+        margin-top: 6px;
     }
     </style>
     """,
@@ -612,8 +612,8 @@ st.sidebar.markdown(
     f"""
     <div class="small-info-box">
         <div class="small-info-title">비산거리 / 보폭 기준 확인거리</div>
-        <div class="small-info-main">D = {distance:.2f}m</div>
-        <div class="small-info-sub">약 {distance_steps}보 이내 확인</div>
+        <div class="small-info-main">비산거리는 약 {distance:.2f}m입니다.</div>
+        <div class="small-info-sub">약 {distance_steps}보 이내 반경 확인</div>
     </div>
     """,
     unsafe_allow_html=True
