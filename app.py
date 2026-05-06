@@ -109,14 +109,34 @@ st.markdown(
     }
 
     .small-info-box {
-        background-color: #eef2f7;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 0.82rem;
-        line-height: 1.35;
-        color: #34495e;
-        margin-top: 2px;
+        background-color: #eaf4ff;
+        border: 2px solid #3498db;
+        border-radius: 12px;
+        padding: 14px 12px;
+        color: #1f2d3d;
+        margin-top: 6px;
+        margin-bottom: 8px;
+        text-align: center;
+    }
+
+    .small-info-title {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #566573;
         margin-bottom: 4px;
+    }
+
+    .small-info-main {
+        font-size: 1.45rem;
+        font-weight: 900;
+        line-height: 1.35;
+    }
+
+    .small-info-sub {
+        font-size: 1.2rem;
+        font-weight: 800;
+        line-height: 1.35;
+        margin-top: 4px;
     }
     </style>
     """,
@@ -591,8 +611,9 @@ distance_steps = math.ceil(distance / STRIDE_LENGTH_M)
 st.sidebar.markdown(
     f"""
     <div class="small-info-box">
-    비산거리 D: <b>{distance:.2f}m</b><br>
-    확인거리: <b>약 {distance_steps}보</b>
+        <div class="small-info-title">비산거리 / 보폭 기준 확인거리</div>
+        <div class="small-info-main">D = {distance:.2f}m</div>
+        <div class="small-info-sub">약 {distance_steps}보 이내 확인</div>
     </div>
     """,
     unsafe_allow_html=True
