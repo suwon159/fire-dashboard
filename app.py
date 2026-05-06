@@ -1,5 +1,6 @@
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
 import pandas as pd
 import math
 import requests
@@ -735,52 +736,218 @@ with right:
 
 
 # =========================================================
-# 세부 계산값 - 항상 표시
+# 상세 분석 토글
 # =========================================================
 
-st.subheader("세부 계산값")
+with st.expander("상세 분석 그래프 및 세부 계산값 보기"):
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            "구성값 비교",
+            "가연물 유무 비교",
+            "작업 높이별 변화",
+            "세부 계산값"
+        ]
+    )
 
-result_df = pd.DataFrame({
-    "항목": [
-        "장비",
-        "장비점수",
-        "E",
-        "기온",
-        "상대습도",
-        "풍속 V",
-        "작업높이 H",
-        "계산 비산거리 D",
-        "보폭 기준 확인거리",
-        "Dr",
-        "RHr",
-        "Tr",
-        "W",
-        "비산거리 내 가연물 존재 여부",
-        "M_adj",
-        "R",
-        "위험등급",
-        "오늘의 날씨"
-    ],
-    "값": [
-        equipment,
-        round(equipment_score, 3),
-        round(E, 3),
-        f"{temperature:.1f}℃",
-        f"{humidity:.1f}%",
-        f"{wind_speed:.1f}m/s",
-        f"{work_height:.1f}m",
-        f"{distance:.2f}m",
-        f"약 {distance_steps}보",
-        round(Dr, 3),
-        round(RHr, 3),
-        round(Tr, 3),
-        round(W, 3),
-        combustible_in_distance,
-        round(M_adj, 3),
-        round(R, 3),
-        grade,
-        st.session_state.today_weather
-    ]
-})
+    with tab1:
+        st.subheader("E / W / M_adj 비교")
 
-st.dataframe(result_df, use_container_width=True, hide_index=True)
+        df_factor = pd.DataFrame({
+            "구분": [
+                "장비 위험도(E)",
+                "기상 위험도(W)",
+                "가연물 보정위험도(M_adj)"
+            ],
+            "값": [E, W, M_adj]
+        })
+
+        fig_bar = px.bar(
+            df_factor,
+            x="구분",
+            y="값",
+            text="값"
+        )
+
+        fig_bar.update_traces(
+            texttemplate="%{text:.2f}",
+            textposition="outside"
+        )
+
+        fig_bar.update_layout(
+            yaxis_range=[0, 1],
+            height=420,
+            xaxis_title="",
+            yaxis_title="값"
+        )
+
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with tab2:
+        st.subheader("현재 조건에서 가연물 유무에 따른 위험도 비교")
+
+        M_with_combustible = clamp(0.75 + 0.25 * Dr)
+        R_with_combustible = E * W * M_with_combustible
+
+        M_without_combustible = clamp(0.20 + 0.10 * Dr)
+        R_without_combustible = E * W * M_without_combustible
+
+        grade_without, _, _ = get_risk_grade(R_without_combustible)
+        grade_with, _, _ = get_risk_grade(R_with_combustible)
+
+        df_compare = pd.DataFrame({
+            "조건": [
+                "비산거리 내 가연물 없음",
+                "비산거리 내 가연물 있음"
+            ],
+            "M_adj": [
+                round(M_without_combustible, 3),
+                round(M_with_combustible, 3)
+            ],
+            "최종 위험도(%)": [
+                round(R_without_combustible * 100, 1),
+                round(R_with_combustible * 100, 1)
+            ],
+            "위험등급": [
+                grade_without,
+                grade_with
+            ]
+        })
+
+        fig_compare = px.bar(
+            df_compare,
+            x="조건",
+            y="최종 위험도(%)",
+            text="최종 위험도(%)"
+        )
+
+        fig_compare.update_traces(
+            texttemplate="%{text:.1f}%",
+            textposition="outside"
+        )
+
+        fig_compare.update_layout(
+            yaxis_range=[0, 100],
+            height=420,
+            xaxis_title="",
+            yaxis_title="최종 위험도(%)"
+        )
+
+        st.plotly_chart(fig_compare, use_container_width=True)
+
+        st.dataframe(
+            df_compare,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with tab3:
+        st.subheader("작업 높이별 위험도 변화 예시")
+
+        sample_heights = [1, 3, 5, 7.5, 10, 15, 21]
+        sample_results = []
+
+        for h in sample_heights:
+            sample_distance = calculate_scattering_distance(h, wind_speed)
+            sample_dr = clamp(sample_distance / 15.0)
+            sample_steps = math.ceil(sample_distance / STRIDE_LENGTH_M)
+
+            sample_w = clamp(2.9393 * sample_dr * RHr * Tr)
+
+            sample_m_with = clamp(0.75 + 0.25 * sample_dr)
+            sample_r_with = E * sample_w * sample_m_with
+
+            sample_m_without = clamp(0.20 + 0.10 * sample_dr)
+            sample_r_without = E * sample_w * sample_m_without
+
+            sample_grade_with, _, _ = get_risk_grade(sample_r_with)
+            sample_grade_without, _, _ = get_risk_grade(sample_r_without)
+
+            sample_results.append({
+                "작업 높이(m)": h,
+                "비산거리 D(m)": round(sample_distance, 2),
+                "확인 필요 거리(보)": sample_steps,
+                "Dr": round(sample_dr, 3),
+                "W": round(sample_w, 3),
+                "가연물 있음 M_adj": round(sample_m_with, 3),
+                "가연물 있음 위험도(%)": round(sample_r_with * 100, 1),
+                "가연물 있음 등급": sample_grade_with,
+                "가연물 없음 M_adj": round(sample_m_without, 3),
+                "가연물 없음 위험도(%)": round(sample_r_without * 100, 1),
+                "가연물 없음 등급": sample_grade_without
+            })
+
+        df_height_compare = pd.DataFrame(sample_results)
+
+        fig_height = px.line(
+            df_height_compare,
+            x="작업 높이(m)",
+            y="가연물 있음 위험도(%)",
+            markers=True
+        )
+
+        fig_height.update_layout(
+            yaxis_range=[0, 100],
+            height=420,
+            xaxis_title="작업 높이(m)",
+            yaxis_title="가연물 있음 위험도(%)"
+        )
+
+        st.plotly_chart(fig_height, use_container_width=True)
+
+        st.dataframe(
+            df_height_compare,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with tab4:
+        st.subheader("세부 계산값")
+
+        result_df = pd.DataFrame({
+            "항목": [
+                "장비",
+                "장비점수",
+                "E",
+                "기온",
+                "상대습도",
+                "풍속 V",
+                "작업높이 H",
+                "계산 비산거리 D",
+                "보폭 기준 확인거리",
+                "Dr",
+                "RHr",
+                "Tr",
+                "W",
+                "비산거리 내 가연물 존재 여부",
+                "M_adj",
+                "R",
+                "위험등급",
+                "오늘의 날씨"
+            ],
+            "값": [
+                equipment,
+                round(equipment_score, 3),
+                round(E, 3),
+                f"{temperature:.1f}℃",
+                f"{humidity:.1f}%",
+                f"{wind_speed:.1f}m/s",
+                f"{work_height:.1f}m",
+                f"{distance:.2f}m",
+                f"약 {distance_steps}보",
+                round(Dr, 3),
+                round(RHr, 3),
+                round(Tr, 3),
+                round(W, 3),
+                combustible_in_distance,
+                round(M_adj, 3),
+                round(R, 3),
+                grade,
+                st.session_state.today_weather
+            ]
+        })
+
+        st.dataframe(
+            result_df,
+            use_container_width=True,
+            hide_index=True
+        )
