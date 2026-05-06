@@ -734,48 +734,53 @@ with right:
     )
 
 
-with st.expander("세부 계산값 보기"):
-    result_df = pd.DataFrame({
-        "항목": [
-            "장비",
-            "장비점수",
-            "E",
-            "기온",
-            "상대습도",
-            "풍속 V",
-            "작업높이 H",
-            "계산 비산거리 D",
-            "보폭 기준 확인거리",
-            "Dr",
-            "RHr",
-            "Tr",
-            "W",
-            "비산거리 내 가연물 존재 여부",
-            "M_adj",
-            "R",
-            "위험등급",
-            "오늘의 날씨"
-        ],
-        "값": [
-            equipment,
-            round(equipment_score, 3),
-            round(E, 3),
-            f"{temperature:.1f}℃",
-            f"{humidity:.1f}%",
-            f"{wind_speed:.1f}m/s",
-            f"{work_height:.1f}m",
-            f"{distance:.2f}m",
-            f"약 {distance_steps}보",
-            round(Dr, 3),
-            round(RHr, 3),
-            round(Tr, 3),
-            round(W, 3),
-            combustible_in_distance,
-            round(M_adj, 3),
-            round(R, 3),
-            grade,
-            st.session_state.today_weather
-        ]
-    })
+# =========================================================
+# 세부 계산값 - 항상 표시
+# =========================================================
 
-    st.dataframe(result_df, use_container_width=True, hide_index=True)
+st.subheader("세부 계산값")
+
+result_df = pd.DataFrame({
+    "항목": [
+        "장비",
+        "장비점수",
+        "E",
+        "기온",
+        "상대습도",
+        "풍속 V",
+        "작업높이 H",
+        "계산 비산거리 D",
+        "보폭 기준 확인거리",
+        "Dr",
+        "RHr",
+        "Tr",
+        "W",
+        "비산거리 내 가연물 존재 여부",
+        "M_adj",
+        "R",
+        "위험등급",
+        "오늘의 날씨"
+    ],
+    "값": [
+        equipment,
+        round(equipment_score, 3),
+        round(E, 3),
+        f"{temperature:.1f}℃",
+        f"{humidity:.1f}%",
+        f"{wind_speed:.1f}m/s",
+        f"{work_height:.1f}m",
+        f"{distance:.2f}m",
+        f"약 {distance_steps}보",
+        round(Dr, 3),
+        round(RHr, 3),
+        round(Tr, 3),
+        round(W, 3),
+        combustible_in_distance,
+        round(M_adj, 3),
+        round(R, 3),
+        grade,
+        st.session_state.today_weather
+    ]
+})
+
+st.dataframe(result_df, use_container_width=True, hide_index=True)
