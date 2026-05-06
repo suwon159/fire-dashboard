@@ -22,8 +22,8 @@ def get_risk_grade(r):
     if r <= 0.30:
         return (
             "안전",
-            "기본 안전수칙 준수<br>"
-            "작업 전 주변 가연물 확인",
+            "기본 화기 작업 안전수칙 준수<br>"
+            "근로자 화재 안전 교육 실시",
             "#2ecc71"
         )
     elif r <= 0.80:
@@ -290,21 +290,6 @@ if "wind_speed" not in st.session_state:
 if "today_weather" not in st.session_state:
     st.session_state.today_weather = "정보 없음"
 
-if "weather_debug" not in st.session_state:
-    st.session_state.weather_debug = ""
-
-if "fcst_debug" not in st.session_state:
-    st.session_state.fcst_debug = ""
-
-if "last_ncst_base" not in st.session_state:
-    st.session_state.last_ncst_base = ""
-
-if "last_fcst_base" not in st.session_state:
-    st.session_state.last_fcst_base = ""
-
-if "last_fcst_target" not in st.session_state:
-    st.session_state.last_fcst_target = ""
-
 if "weather_locked" not in st.session_state:
     st.session_state.weather_locked = False
 
@@ -341,9 +326,6 @@ if use_kma_weather:
             ncst_base_date, ncst_base_time = get_ncst_base_datetime()
             fcst_base_date, fcst_base_time = get_fcst_base_datetime()
 
-            st.session_state.last_ncst_base = f"{ncst_base_date} {ncst_base_time}"
-            st.session_state.last_fcst_base = f"{fcst_base_date} {fcst_base_time}"
-
             ncst_items = fetch_ultra_srt_ncst(
                 nx=NX,
                 ny=NY,
@@ -361,10 +343,7 @@ if use_kma_weather:
             )
 
             temp, hum, wind = parse_kma_weather(ncst_items)
-            fcst_target, sky, pty = parse_fcst_weather(fcst_items)
-
-            st.session_state.weather_debug = str(ncst_items)
-            st.session_state.fcst_debug = str(fcst_items)
+            _, sky, pty = parse_fcst_weather(fcst_items)
 
             if temp is not None:
                 st.session_state.temperature = temp
@@ -374,7 +353,6 @@ if use_kma_weather:
                 st.session_state.wind_speed = wind
 
             st.session_state.today_weather = make_today_weather_text(sky, pty)
-            st.session_state.last_fcst_target = fcst_target if fcst_target else ""
             st.session_state.weather_locked = True
 
             st.sidebar.success("기상청 값 불러오기 성공")
@@ -387,15 +365,6 @@ if use_kma_weather:
             st.sidebar.error(f"기상청 값 조회 실패: {e}")
         except Exception as e:
             st.sidebar.error(f"기상청 값 조회 실패: {e}")
-
-if st.session_state.last_ncst_base:
-    st.sidebar.caption(f"실황 기준시각: {st.session_state.last_ncst_base}")
-
-if st.session_state.last_fcst_base:
-    st.sidebar.caption(f"예보 발표시각: {st.session_state.last_fcst_base}")
-
-if st.session_state.last_fcst_target:
-    st.sidebar.caption(f"날씨 상태 적용시각: {st.session_state.last_fcst_target}")
 
 st.subheader(f"오늘의 날씨: {st.session_state.today_weather}")
 
