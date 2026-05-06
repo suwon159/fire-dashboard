@@ -20,11 +20,27 @@ def calculate_scattering_distance(height, wind_speed):
 
 def get_risk_grade(r):
     if r <= 0.30:
-        return "안전", "기본 화기 작업 안전수칙 준수, 근로자 화재 안전 교육 실시", "#2ecc71"
+        return (
+            "안전",
+            "기본 안전수칙 준수<br>"
+            "작업 전 주변 가연물 확인",
+            "#2ecc71"
+        )
     elif r <= 0.80:
-        return "주의", "소화기 1대 이상 추가 비치 + 상부 작업 시 하부에 소화기 추가 비치, 작업 전 주변 가연물에 방염 스프레이 조치", "#f1c40f"
+        return (
+            "주의",
+            "주변 가연물 정리<br>"
+            "소화기 배치<br>"
+            "화기 작업 조건 확인",
+            "#f1c40f"
+        )
     else:
-        return "위험", "근로자 개인 소화 키트 지참, 화기 작업 작업자 1인당 화재감시자 1명씩 배치 준수.", "#e74c3c"
+        return (
+            "위험",
+            "근로자 개인 소화 키트 지참<br>"
+            "화기 작업 작업자 1인당 화재감시자 1명씩 배치 준수",
+            "#e74c3c"
+        )
 
 
 AUTH_KEY = "Gme6uZvRRZ6nurmb0ZWelQ"
@@ -535,7 +551,8 @@ with right:
         'color:white;'
         'font-size:20px;'
         'font-weight:bold;'
-        'text-align:center;">'
+        'text-align:center;'
+        'line-height:1.8;">'
         f'현재 등급: {grade}<br><br>'
         f'{action}'
         '</div>'
